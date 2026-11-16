@@ -1,18 +1,24 @@
-// Fixed Roblox endpoints only. No credentials, arbitrary proxy URLs, or private-data access.
+// Fixed read-only Roblox endpoints. Optional service session is restricted to connection lists.
+import { createHash } from 'node:crypto';
 const cache = new Map();
 const inflight = new Map();
 const cooldowns = new Map();
 class ApiError extends Error { constructor(status, message, retryAfter = 30) { super(message); this.status = status; this.retryAfter = retryAfter; } }
 async function roblox(url, options = {}) {
-  const key = url + (options.body || '');
   const parsed = new URL(url);
-  const endpoint = `${options.method || 'GET'} ${parsed.origin}${parsed.pathname}`;
+  const { serviceSession = false, ...requestOptions } = options;
+  const session = serviceSession ? (process.env.ROBLOX_SESSION_COOKIE || '').trim() : '';
+  const allowed = parsed.origin === 'https://friends.roblox.com' && /^\/v1\/users\/\d+\/(friends(?:\/find)?|followers|followings)$/.test(parsed.pathname) && (!requestOptions.method || requestOptions.method === 'GET');
+  if (serviceSession && (!allowed || !session || /[\r\n;]/.test(session))) throw new ApiError(503, 'The server connection is unavailable.');
+  const sessionKey = session ? createHash('sha256').update(session).digest('hex').slice(0, 24) : 'public';
+  const key = sessionKey + url + (requestOptions.body || '');
+  const endpoint = `${sessionKey} ${requestOptions.method || 'GET'} ${parsed.origin}${parsed.pathname}`;
   const isProfile = /^\/v1\/users\/\d+$/.test(parsed.pathname) && parsed.hostname === 'users.roblox.com';
   const isOutfitList = parsed.hostname === 'avatar.roblox.com' && /^\/v2\/avatar\/users\/\d+\/outfits$/.test(parsed.pathname);
-  const ttl = isProfile || isOutfitList ? 30 * 60 * 1000 : 5 * 60 * 1000;
+  const ttl = serviceSession ? 60000 : isProfile || isOutfitList ? 30 * 60 * 1000 : 5 * 60 * 1000;
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.value;
-  const stale = () => hit && hit.staleUntil > Date.now() ? hit.value : null;
+  const stale = () => !serviceSession && hit && hit.staleUntil > Date.now() ? hit.value : null;
   const cooldown = cooldowns.get(endpoint) || 0;
   if (cooldown > Date.now()) {
     if (stale()) return stale();
@@ -21,7 +27,7 @@ async function roblox(url, options = {}) {
   if (inflight.has(key)) return inflight.get(key);
   const promise = (async () => {
     let response;
-    try { response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(6000) }); }
+    try { response = await fetch(url, { ...requestOptions, redirect: 'error', headers: { 'Content-Type': 'application/json', ...(session ? { Cookie: `.ROBLOSECURITY=${session}` } : {}) }, signal: AbortSignal.timeout(6000) }); }
     catch { if (stale()) return stale(); throw new ApiError(503, 'Roblox is taking too long to respond. Please try again.'); }
     if (!response.ok) {
       const retryHeader = response.headers.get('retry-after');
@@ -137,14 +143,27 @@ export async function dispatch(params) {
   }
   if (['friends','followers','following'].includes(kind)) {
     const route = kind === 'following' ? 'followings' : kind;
-    const response = await optional(get('friends', `/v1/users/${id}/${route}?limit=50&sortOrder=Desc${paging}`));
+    const authenticated = !!process.env.ROBLOX_SESSION_COOKIE?.trim();
+    const connection = path => roblox(`https://friends.roblox.com${path}`, { serviceSession: authenticated });
+    let response = await optional(connection(`/v1/users/${id}/${route}?limit=50&sortOrder=Desc${paging}`));
+    if (!response.ok && kind === 'friends' && [403, 404].includes(response.status)) {
+      response = await optional(connection(`/v1/users/${id}/friends/find?limit=50${paging}`));
+    }
     if (!response.ok) {
       if ([401, 403].includes(response.status)) return { data: [], availability: 'roblox-sign-in', connectionType: kind };
       throw new ApiError(response.status, response.error);
     }
     const result = response.value;
-    const source = result.data || [];
-    return { ...result, data: await pictures(source.slice(0, 50)), truncated: !result.nextPageCursor && source.length > 50 };
+    const source = (result.data || result.PageItems || []).map(item => ({ ...item, id: item.id ?? item.userId ?? item.Id ?? item.UserId }));
+    if (source.some(u => !validId(String(u.id)))) throw new ApiError(503, 'Roblox returned an unsupported connection response.');
+    let users = source.slice(0, 50);
+    if (users.some(u => !u.name)) {
+      const identities = await roblox('https://users.roblox.com/v1/users', { method: 'POST', body: JSON.stringify({ userIds: users.map(u => Number(u.id)), excludeBannedUsers: false }) });
+      const names = new Map((identities.data || []).map(u => [u.id,u]));
+      users = users.map(u => ({ ...u, ...names.get(Number(u.id)) }));
+    }
+    const nextPageCursor = result.nextPageCursor || result.NextCursor || result.nextCursor || null;
+    return { data: await pictures(users), nextPageCursor, truncated: !nextPageCursor && source.length > 50 };
   }
   if (kind === 'badges') {
     const result = await get('badges', `/v1/users/${id}/badges?limit=10&sortOrder=Desc${paging}`);
@@ -172,8 +191,10 @@ export default async function handler(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.method !== 'GET') { res.setHeader('Allow','GET'); return res.status(405).json({ error: 'Only GET requests are supported.' }); }
   try {
-    const result = await dispatch(new URL(req.url, 'https://bloxscope.local').searchParams);
-    res.setHeader('Cache-Control', result.profileWarning ? 'no-store' : 'public, s-maxage=300, stale-while-revalidate=600');
+    const params = new URL(req.url, 'https://bloxscope.local').searchParams;
+    const result = await dispatch(params);
+    const isConnection = ['friends','followers','following'].includes(params.get('kind'));
+    res.setHeader('Cache-Control', (result.profileWarning || isConnection) ? 'no-store' : 'public, s-maxage=300, stale-while-revalidate=600');
     return res.status(200).json(result);
   } catch (error) {
     res.setHeader('Cache-Control', 'no-store');

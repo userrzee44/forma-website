@@ -41,3 +41,11 @@ Roblox rate limits requests. Profile details are cached in server memory for 30 
 - `tests/api.test.js`: API regression checks
 
 The API never accepts arbitrary upstream URLs or forwards user credentials. Google Fonts is optional and has system font fallbacks. Bloxscope is an independent fan project, not affiliated with or endorsed by Roblox Corporation.
+
+## Optional server-owned Roblox session (connection lists only)
+
+Set `ROBLOX_SESSION_COOKIE` in Vercel Production environment variables as a **Secret**. Enter only the dedicated account’s raw `.ROBLOSECURITY` value, without the cookie name or semicolon. Never commit it, send it to chat, or put it in frontend code. Redeploy after adding or changing it. Use an account you control with no valuable assets; the credential grants account access.
+
+The session is sent only to fixed read-only friends/followers/following endpoints on `https://friends.roblox.com`. It is never sent to thumbnails, users, avatar endpoints, redirects, arbitrary hosts, or a browser. Account actions such as follow/unfollow and friend requests are not implemented. Connection results are not CDN-cached. Server memory entries are separated by a hash of the configured session and expire after one minute; stale authenticated results are not served.
+
+An expired or rejected session falls back to the official Roblox list links. Roblox may reject sessions from server infrastructure or apply challenges/rate limits; the setup requires a live test and does not guarantee access. It does not bypass player privacy. Remove the environment variable and redeploy to disable the integration. Never rotate accounts to evade rate limits.

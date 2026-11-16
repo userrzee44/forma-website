@@ -116,3 +116,33 @@ test('connection authentication restrictions are explicit and never presented as
  globalThis.fetch=async url=>new Response('{}',{status:url.includes('/friends?')?403:401});
  for(const kind of ['friends','followers','following']){const d=await fresh(query({kind,id:'7283197'}));assert.equal(d.availability,'roblox-sign-in');assert.equal(d.connectionType,kind);assert.deepEqual(d.data,[]);}
 });
+
+test('service session is sent only to read-only connection endpoints and never returned',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=service-scope');const original=globalThis.fetch,prior=process.env.ROBLOX_SESSION_COOKIE;
+ t.after(()=>{globalThis.fetch=original;if(prior===undefined)delete process.env.ROBLOX_SESSION_COOKIE;else process.env.ROBLOX_SESSION_COOKIE=prior;});
+ process.env.ROBLOX_SESSION_COOKIE='FAKE_SESSION_FOR_TEST_ONLY';const calls=[];
+ globalThis.fetch=async (url,options)=>{
+  calls.push({url,options});
+  if(url.includes('friends.roblox.com'))return new Response(JSON.stringify({data:[{id:42,name:'Example',displayName:'Example'}]}));
+  return new Response(JSON.stringify({data:[]}));
+ };
+ const d=await fresh(query({kind:'followers',id:'7283197'}));assert.equal(d.data[0].id,42);
+ for(const c of calls){if(c.url.includes('friends.roblox.com')){assert.equal(c.options.headers.Cookie,'.ROBLOSECURITY=FAKE_SESSION_FOR_TEST_ONLY');assert.equal(c.options.redirect,'error');assert.equal(c.options.method,undefined);}else assert.equal(c.options.headers.Cookie,undefined);}
+ assert.ok(!JSON.stringify(d).includes('FAKE_SESSION'));
+});
+test('friends fallback normalizes paginated IDs and hydrates names without forwarding credentials',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=service-friends');const original=globalThis.fetch,prior=process.env.ROBLOX_SESSION_COOKIE;
+ t.after(()=>{globalThis.fetch=original;if(prior===undefined)delete process.env.ROBLOX_SESSION_COOKIE;else process.env.ROBLOX_SESSION_COOKIE=prior;});process.env.ROBLOX_SESSION_COOKIE='FAKE_FRIENDS_SESSION';
+ globalThis.fetch=async (url,options)=>{
+  if(url.includes('/friends?'))return new Response('{}',{status:403});
+  if(url.includes('/friends/find'))return new Response(JSON.stringify({PageItems:[{UserId:42}],NextCursor:'page-two'}));
+  assert.equal(options.headers.Cookie,undefined);
+  return new Response(JSON.stringify({data:url.includes('users.roblox.com')?[{id:42,name:'Example',displayName:'Example display'}]:[]}));
+ };
+ const d=await fresh(query({kind:'friends',id:'7283197'}));assert.equal(d.data[0].name,'Example');assert.equal(d.nextPageCursor,'page-two');
+});
+test('connection responses never use shared CDN caching',async t=>{
+ const original=globalThis.fetch;t.after(()=>globalThis.fetch=original);globalThis.fetch=async()=>new Response('{}',{status:401});
+ const r={headers:{},setHeader(k,v){this.headers[k]=v;},status(s){this.code=s;return this;},json(j){this.body=j;}};
+ await handler({method:'GET',url:'/api/roblox?kind=followers&id=999988'},r);assert.equal(r.headers['Cache-Control'],'no-store');
+});
