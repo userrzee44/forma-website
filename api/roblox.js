@@ -2,26 +2,41 @@
 const cache = new Map();
 const inflight = new Map();
 const cooldowns = new Map();
-class ApiError extends Error { constructor(status, message) { super(message); this.status = status; } }
+class ApiError extends Error { constructor(status, message, retryAfter = 30) { super(message); this.status = status; this.retryAfter = retryAfter; } }
 async function roblox(url, options = {}) {
   const key = url + (options.body || '');
-  const host = new URL(url).hostname;
+  const parsed = new URL(url);
+  const endpoint = `${options.method || 'GET'} ${parsed.origin}${parsed.pathname}`;
+  const isProfile = /^\/v1\/users\/\d+$/.test(parsed.pathname) && parsed.hostname === 'users.roblox.com';
+  const ttl = isProfile ? 30 * 60 * 1000 : 5 * 60 * 1000;
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.value;
-  if ((cooldowns.get(host) || 0) > Date.now()) throw new ApiError(429, 'Roblox is receiving too many requests. Please try again shortly.');
+  const stale = () => hit && hit.staleUntil > Date.now() ? hit.value : null;
+  const cooldown = cooldowns.get(endpoint) || 0;
+  if (cooldown > Date.now()) {
+    if (stale()) return stale();
+    throw new ApiError(429, 'Roblox is receiving too many requests. Please try again shortly.', Math.ceil((cooldown - Date.now()) / 1000));
+  }
   if (inflight.has(key)) return inflight.get(key);
   const promise = (async () => {
     let response;
-    try { response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(9000) }); }
-    catch { throw new ApiError(503, 'Roblox is taking too long to respond. Please try again.'); }
+    try { response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(6000) }); }
+    catch { if (stale()) return stale(); throw new ApiError(503, 'Roblox is taking too long to respond. Please try again.'); }
     if (!response.ok) {
-      if (response.status === 429) cooldowns.set(host, Date.now() + 30000);
+      const retryHeader = response.headers.get('retry-after');
+      const delay = Number(retryHeader) || (retryHeader ? Math.ceil((Date.parse(retryHeader) - Date.now()) / 1000) : 30);
+      const retryAfter = Math.max(1, Math.min(300, delay || 30));
+      if (response.status === 429) {
+        if (cooldowns.size > 400) cooldowns.delete(cooldowns.keys().next().value);
+        cooldowns.set(endpoint, Date.now() + retryAfter * 1000);
+      }
+      if ((response.status === 429 || response.status >= 500) && stale()) return stale();
       const messages = { 400: 'Roblox could not process this request.', 401: 'Roblox requires authentication for this information.', 403: 'This information is private or restricted by Roblox.', 404: 'This information was not found on Roblox.', 429: 'Roblox is receiving too many requests. Please try again shortly.' };
-      throw new ApiError(response.status === 429 ? 429 : response.status >= 500 ? 503 : response.status, messages[response.status] || 'Roblox is temporarily unavailable. Please try again.');
+      throw new ApiError(response.status === 429 ? 429 : response.status >= 500 ? 503 : response.status, messages[response.status] || 'Roblox is temporarily unavailable. Please try again.', retryAfter);
     }
     const value = await response.json();
     if (cache.size > 400) cache.delete(cache.keys().next().value);
-    cache.set(key, { value, expires: Date.now() + 60000 });
+    cache.set(key, { value, expires: Date.now() + ttl, staleUntil: Date.now() + ttl + 30 * 60 * 1000 });
     return value;
   })();
   inflight.set(key, promise);
@@ -40,6 +55,10 @@ async function pictures(items, type = 'avatar-headshot') {
 }
 export async function dispatch(params) {
   const kind = params.get('kind') || 'search';
+  if (kind === 'spotlight') {
+    const result = await get('thumbnails', '/v1/users/avatar?userIds=156&size=420x420&format=Png&isCircular=false');
+    return { thumbnail: result.data?.[0]?.imageUrl || null };
+  }
   if (kind === 'search') {
     const q = (params.get('q') || '').trim();
     if ((!validId(q) && q.length < 3) || q.length > 50) throw new ApiError(400, 'Enter at least 3 characters, or a player ID.');
@@ -47,11 +66,10 @@ export async function dispatch(params) {
       const user = await get('users', `/v1/users/${q}`);
       return { data: await pictures([user]) };
     }
-    // Fetch keyword matches and the exact username together; either can succeed independently.
-    const [results, exact] = await Promise.all([
-      optional(get('users', `/v1/users/search?keyword=${encodeURIComponent(q)}&limit=10`)),
-      optional(roblox('https://users.roblox.com/v1/usernames/users', { method: 'POST', body: JSON.stringify({ usernames: [q], excludeBannedUsers: false }) }))
-    ]);
+    // Avoid a second identity request when keyword results already contain the exact user.
+    const results = await optional(get('users', `/v1/users/search?keyword=${encodeURIComponent(q)}&limit=10`));
+    const hasExact = results.value?.data?.some(u => u.name.toLowerCase() === q.toLowerCase());
+    const exact = hasExact ? { ok: true, value: { data: [] } } : await optional(roblox('https://users.roblox.com/v1/usernames/users', { method: 'POST', body: JSON.stringify({ usernames: [q], excludeBannedUsers: false }) }));
     if (!results.ok && !exact.value?.data?.length) throw new ApiError(results.status, results.error);
     const all = [...(exact.value?.data || []), ...(results.value?.data || [])];
     const users = [...new Map(all.map(u => [u.id, u])).values()].slice(0, 10);
@@ -63,7 +81,20 @@ export async function dispatch(params) {
   if (cursor.length > 2000) throw new ApiError(400, 'Invalid page cursor.');
   const paging = `&cursor=${encodeURIComponent(cursor)}`;
   if (kind === 'profile') {
-    const user = await get('users', `/v1/users/${id}`);
+    let user;
+    let profileWarning = null;
+    let retryAfter = null;
+    try { user = await get('users', `/v1/users/${id}`); }
+    catch (error) {
+      if (![429, 503].includes(error.status)) throw error;
+      // Public identity lookup can still work while the detail endpoint is limited.
+      const identity = await optional(roblox('https://users.roblox.com/v1/users', { method: 'POST', body: JSON.stringify({ userIds: [Number(id)], excludeBannedUsers: false }) }));
+      const basic = identity.value?.data?.find(u => u.id === Number(id));
+      if (!basic) throw error;
+      user = { ...basic, created: null, description: null };
+      profileWarning = 'Roblox temporarily limited account details. Available profile sections are still shown below.';
+      retryAfter = error.retryAfter;
+    }
     const [avatar, thumbnail, friends, followers, following, inventory] = await Promise.all([
       optional(get('avatar', `/v1/users/${id}/avatar`)),
       optional(get('thumbnails', `/v1/users/avatar?userIds=${id}&size=420x420&format=Png&isCircular=false`)),
@@ -72,7 +103,7 @@ export async function dispatch(params) {
       optional(get('friends', `/v1/users/${id}/followings/count`)),
       optional(get('inventory', `/v1/users/${id}/can-view-inventory`))
     ]);
-    return { user, avatar, thumbnail: thumbnail.value?.data?.[0]?.imageUrl || null, friends, followers, following, inventory, fetchedAt: new Date().toISOString() };
+    return { user, profileWarning, retryAfter, avatar, thumbnail: thumbnail.value?.data?.[0]?.imageUrl || null, friends, followers, following, inventory, fetchedAt: new Date().toISOString() };
   }
   if (kind === 'avatar') {
     const avatar = await get('avatar', `/v1/users/${id}/avatar`);
@@ -129,11 +160,11 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') { res.setHeader('Allow','GET'); return res.status(405).json({ error: 'Only GET requests are supported.' }); }
   try {
     const result = await dispatch(new URL(req.url, 'https://bloxscope.local').searchParams);
-    res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
+    res.setHeader('Cache-Control', result.profileWarning ? 'no-store' : 'public, s-maxage=300, stale-while-revalidate=600');
     return res.status(200).json(result);
   } catch (error) {
     res.setHeader('Cache-Control', 'no-store');
-    if (error.status === 429) res.setHeader('Retry-After','30');
-    return res.status(error.status || 503).json({ error: error.status ? error.message : 'Roblox is temporarily unavailable. Please try again.' });
+    if (error.status === 429) res.setHeader('Retry-After', String(error.retryAfter || 30));
+    return res.status(error.status || 503).json({ error: error.status ? error.message : 'Roblox is temporarily unavailable. Please try again.', ...(error.status === 429 ? { retryAfter: error.retryAfter || 30 } : {}) });
   }
 }
