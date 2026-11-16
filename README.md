@@ -1,22 +1,43 @@
-# Forma — Creative Studio
+# Bloxscope
 
-A responsive editorial portfolio template built with HTML, CSS, and JavaScript. No package installation, build step, or environment variables required.
+A Roblox player explorer with live username autocomplete and detailed public profiles. Built with HTML, CSS, JavaScript, and a Node.js Vercel Function. No dependencies, account cookies, API keys, or database needed.
 
-## Vercel
+## Deploy to Vercel
 
-Import the GitHub repository into Vercel. Keep the Root Directory at the repository root. The included `vercel.json` configures this as a static site with no build command and output directory `.`.
+Import this repository. Choose framework preset **Other**, root directory **.**, no build command, and output directory **.**. The included vercel.json configures the static site and `/api/roblox` Node.js function. If this repository is already connected to Vercel, a push to main normally triggers deployment; check that the project uses Node.js 22 or newer. No environment variables are required.
 
-## Local preview
+A static-only host such as GitHub Pages cannot run the API. Deploy on Vercel for live search and profiles.
 
-Run `python3 -m http.server 3000` in this directory, then visit http://localhost:3000.
+## Local development
 
-## Customize
+Requires Node.js 22 or newer. Run `npm run dev` and open http://localhost:3000. No installation step is required. Run `npm test` for API validation and regression checks.
 
-- `index.html`: studio name, copy, project descriptions, metadata, and contact section.
-- `style.css`: colors, fonts, layout, and CSS project illustrations.
-- `script.js`: project category filtering and enquiry draft download.
-- `favicon.svg`: browser tab icon.
+## Features
 
-All projects and the studio identity are illustrative concept content. Replace them with your own work before presenting the website as a real business. Project cards lead to the enquiry section. The enquiry form creates a local text file; it does not send email or store submissions. To receive real enquiries, connect your chosen form service and update the form's explanatory copy.
+- Debounced username / player ID search, avatar suggestions, keyboard selection
+- Shareable player links via `#player/USER_ID`
+- Account creation timestamp, account age, description, verified badge, public banned flag
+- Friends, followers, and following counts
+- Current avatar items with catalog links
+- Saved outfits with thumbnails, pagination, and outfit item inspector
+- Groups with roles and member counts
+- Created games and favourite games
+- Badges and connection lists where Roblox permits unauthenticated access
+- Inventory visibility and public inventory categories
+- Username history, paginated lists, per-panel retries, privacy-aware error states
+- Responsive layout, accessible labels, reduced-motion support, text escaping
 
-Google Fonts supplies optional typography. The site uses system font fallbacks if unavailable. All artwork is CSS, so there are no external image dependencies.
+## Public data and limits
+
+Every result comes from Roblox public endpoints. Not every endpoint is available for every player. Roblox may return 401/403 responses for badges, connection lists, or other sections even when a public Roblox webpage shows similar information. Those sections explicitly show the restriction rather than inventing results or reporting zero. No login or cookie-based fallback is used. Private inventory cannot be viewed. Robux balances, private messages, email, location, passwords, private account information, and hidden presence are not collected.
+
+Roblox rate limits requests. Successful API responses are cached in memory for 60 seconds and in Vercel's CDN for 60 seconds with up to 120 seconds of stale-while-revalidate. Data is not real-time. Thumbnail requests are best-effort; missing or moderated images show placeholders. Unavailable counts show a dash instead of zero. Outfit pagination follows Roblox’s continuation tokens. The friends list can be limited to 50 results when Roblox returns an unpaginated list; this is labelled in the UI.
+
+## Structure
+
+- `index.html`, `style.css`, `script.js`: frontend
+- `api/roblox.js`: fixed-endpoint public Roblox API adapter, validation, caching, timeout handling
+- `dev.js`: local development server with a static-file allowlist
+- `tests/api.test.js`: API regression checks
+
+The API never accepts arbitrary upstream URLs or forwards user credentials. Google Fonts is optional and has system font fallbacks. Bloxscope is an independent fan project, not affiliated with or endorsed by Roblox Corporation.
