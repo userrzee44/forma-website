@@ -8,7 +8,8 @@ async function roblox(url, options = {}) {
   const parsed = new URL(url);
   const endpoint = `${options.method || 'GET'} ${parsed.origin}${parsed.pathname}`;
   const isProfile = /^\/v1\/users\/\d+$/.test(parsed.pathname) && parsed.hostname === 'users.roblox.com';
-  const ttl = isProfile ? 30 * 60 * 1000 : 5 * 60 * 1000;
+  const isOutfitList = parsed.hostname === 'avatar.roblox.com' && /^\/v2\/avatar\/users\/\d+\/outfits$/.test(parsed.pathname);
+  const ttl = isProfile || isOutfitList ? 30 * 60 * 1000 : 5 * 60 * 1000;
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.value;
   const stale = () => hit && hit.staleUntil > Date.now() ? hit.value : null;
@@ -112,7 +113,7 @@ export async function dispatch(params) {
   if (kind === 'outfits') {
     const page = Number(params.get('page') || 1);
     if (!Number.isInteger(page) || page < 1 || page > 1000) throw new ApiError(400, 'Invalid page number.');
-    const result = await get('avatar', `/v2/avatar/users/${id}/outfits?itemsPerPage=12&outfitType=Avatar&isEditable=true&paginationToken=${encodeURIComponent(cursor)}`);
+    const result = await get('avatar', `/v2/avatar/users/${id}/outfits?itemsPerPage=50&outfitType=Avatar&isEditable=true&paginationToken=${encodeURIComponent(cursor)}`);
     return { ...result, data: await pictures(result.data || [], 'outfits'), nextPageCursor: result.paginationToken || null };
   }
   if (kind === 'outfit') {

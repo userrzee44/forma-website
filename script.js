@@ -8,6 +8,8 @@ const image = (url,alt,cls='') => safeImage(url) ? `<img class="${cls}" src="${s
 const loading = '<div class="loading" role="status"><span class="spinner"></span>Connecting to Roblox…</div>';
 let currentId = null, currentProfile = null, activeTab = 'overview', routeVersion = 0, panelVersion = 0, searchAbort, searchTimer, searchSequence = 0;
 let sectionCache = new Map();
+const sectionRequests = new Map(), sectionCooldowns = new Map(), sectionRetries = new Set();
+let sectionRetryTimer;
 const searchMemory = new Map();
 let profileRetryTimer;
 let autoRetriedId = null;
@@ -83,8 +85,27 @@ function overview() {
 }
 const tabDescriptions={avatar:'The items equipped on this player’s current avatar.',outfits:'Saved avatar outfits that Roblox makes available. Select one to inspect its items.',friends:'Publicly available player connections.',followers:'Players following this account, when Roblox permits access.',following:'Accounts this player follows, when Roblox permits access.',groups:'Communities this player belongs to, including their roles.',badges:'Experience badges returned by Roblox, when publicly accessible.',games:'Public experiences created by this account.',favorites:'Experiences this player has marked as favourites.',inventory:'Items in a public inventory, organised by category.',names:'Previous usernames returned by Roblox, newest first.'};
 let inventoryType='Hat';
+function sectionRequest(tab,args) {
+  const key=JSON.stringify([tab,args]);
+  if(sectionRequests.has(key))return sectionRequests.get(key);
+  const request=api(tab,args).finally(()=>sectionRequests.delete(key));
+  sectionRequests.set(key,request);return request;
+}
+function waitForSection(key,seconds,button,version,retry) {
+  clearInterval(sectionRetryTimer);
+  const until=sectionCooldowns.get(key)||Date.now()+Math.max(1,Number(seconds)||30)*1000;
+  sectionCooldowns.set(key,until);
+  const update=()=>{
+    if(version!==panelVersion||!button.isConnected){clearInterval(sectionRetryTimer);return;}
+    const left=Math.max(0,Math.ceil((until-Date.now())/1000));
+    button.disabled=left>0;button.textContent=left>0?`Roblox is busy · ${sectionRetries.has(key)?'retry available':'retrying'} in ${left}s…`:'Try again ↻';
+    if(!left){clearInterval(sectionRetryTimer);sectionCooldowns.delete(key);if(!sectionRetries.has(key)){sectionRetries.add(key);retry();}}
+  };
+  update();if(Date.now()<until)sectionRetryTimer=setInterval(update,1000);
+}
 async function loadTab(tab, pagination = null) {
   if(!currentProfile)return;
+  clearInterval(sectionRetryTimer);
   activeTab=tab;
   const version=++panelVersion, id=currentId;
   document.querySelectorAll('.tab-button').forEach(el=>{el.classList.toggle('active',el.dataset.tab===tab);if(el.dataset.tab===tab)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
@@ -93,31 +114,46 @@ async function loadTab(tab, pagination = null) {
   const title=tabs.find(t=>t[0]===tab)?.[2]||tab;
   const types={Hat:'Hats',HairAccessory:'Hair',FaceAccessory:'Face accessories',NeckAccessory:'Neck accessories',ShoulderAccessory:'Shoulder accessories',FrontAccessory:'Front accessories',BackAccessory:'Back accessories',WaistAccessory:'Waist accessories',Shirt:'Classic shirts',Pants:'Classic pants',TShirt:'Classic T-shirts',Gear:'Gear',Face:'Faces'};
   const header=`<div class="panel-header"><div><h2>${title}</h2><p>${tabDescriptions[tab]}</p></div>${tab==='inventory'?`<select id="inventory-type" aria-label="Inventory category">${Object.entries(types).map(([k,v])=>`<option value="${k}"${k===inventoryType?' selected':''}>${v}</option>`).join('')}</select>`:''}</div>`;
-  let previous=[];
-  if(pagination) {
-    previous=sectionCache.get(`${id}/${tab}/${inventoryType}`)?.items||[];
-    const button=panel.querySelector('[data-more]');if(button){button.disabled=true;button.textContent='Loading…';}
-  } else panel.innerHTML=header+loading;
   const args={id,...(tab==='inventory'?{type:inventoryType}:{}),...(pagination||{})};
-  const key=`${id}/${tab}/${inventoryType}`;
+  const key=`${id}/${tab}/${inventoryType}`, requestKey=JSON.stringify([tab,args]);
+  const cached=sectionCache.get(key);
+  const previous=pagination?(cached?.items||[]):[];
+  const render=(data,items,note='')=>{
+    panel.innerHTML=header+note+renderItems(tab,items,data);
+    if(data.nextPageCursor||data.nextPage){
+      const more=document.createElement('button');more.className='button load-more';more.dataset.more='true';more.textContent='Load more ↓';
+      more.addEventListener('click',()=>loadTab(tab,data.nextPageCursor?{cursor:data.nextPageCursor}:{page:data.nextPage}));panel.append(more);
+    }
+  };
+  if(!pagination&&cached&&Date.now()-cached.time<5*60000){render(cached.data,cached.items);return;}
+  if(pagination){panel.querySelector('.page-retry')?.remove();const button=panel.querySelector('[data-more]');if(button){button.disabled=true;button.textContent='Loading…';}}
+  else panel.innerHTML=header+loading;
   try {
-    let data;
-    if(!pagination&&sectionCache.has(key)) data=sectionCache.get(key).data;
-    else data=await api(tab,args);
+    const until=sectionCooldowns.get(requestKey)||0;
+    if(until>Date.now()){const e=new Error('Roblox has temporarily limited this section.');e.status=429;e.retryAfter=Math.ceil((until-Date.now())/1000);throw e;}
+    const data=await sectionRequest(tab,args);
     if(version!==panelVersion||id!==currentId)return;
+    sectionRetries.delete(requestKey);sectionCooldowns.delete(requestKey);
     const items=pagination?[...previous,...(data.data||[])]:data.data||[];
     const unique=items.filter((item,index,array)=>array.findIndex(x=>(x.id??x.name)===(item.id??item.name))===index);
-    sectionCache.set(key,{data:{...data,data:unique},items:unique});
-    panel.innerHTML=header+renderItems(tab,unique,data);
-    if(data.nextPageCursor||data.nextPage) {
-      const more=document.createElement('button');more.className='button load-more';more.dataset.more='true';more.textContent='Load more ↓';
-      more.addEventListener('click',()=>loadTab(tab,data.nextPageCursor?{cursor:data.nextPageCursor}:{page:data.nextPage})); panel.append(more);
-    }
-  } catch(e) {
+    const entry={data:{...data,data:unique},items:unique,time:Date.now()};
+    if(sectionCache.size>60)sectionCache.delete(sectionCache.keys().next().value);
+    sectionCache.set(key,entry);render(data,unique);
+  }catch(e){
     if(version!==panelVersion||id!==currentId)return;
     const restricted=[401,403].includes(e.status);
-    if(pagination){panel.querySelector('[data-more]')?.remove();const note=document.createElement('div');note.innerHTML=message('Couldn’t load the next page',errorText(e));const retry=document.createElement('button');retry.className='button load-more';retry.textContent='Retry next page ↻';retry.addEventListener('click',()=>{note.remove();retry.remove();loadTab(tab,pagination);});panel.append(note,retry);}
-    else panel.innerHTML=header+message(restricted?'This information isn’t public right now':'Couldn’t load this section',errorText(e),!restricted)+ (restricted?'<p class="subtle-note">Roblox may require authentication, restrict this endpoint, or apply player privacy settings. Bloxscope does not bypass these controls.</p>':'');
+    const canReuse=cached&&Date.now()-cached.time<30*60000&&[429,503].includes(e.status);
+    if(canReuse)render(cached.data,cached.items,'<p class="subtle-note">Showing recently loaded results while Roblox is busy.</p>');
+    if(pagination||canReuse){
+      panel.querySelector('[data-more]')?.remove();panel.querySelector('.page-retry')?.remove();
+      const note=document.createElement('div');note.className='page-retry';note.innerHTML=message(e.status===429?'Roblox is temporarily busy':'Couldn’t load the next page',pagination?'Your loaded items are still shown above. We’ll retry after Roblox’s waiting period.':errorText(e));
+      const retry=document.createElement('button');retry.className='button load-more';retry.textContent='Retry ↻';
+      retry.addEventListener('click',()=>loadTab(tab,pagination));note.append(retry);panel.append(note);
+      if(e.status===429)waitForSection(requestKey,e.retryAfter,retry,version,()=>loadTab(tab,pagination));
+    }else{
+      panel.innerHTML=header+message(restricted?'This information isn’t public right now':e.status===429?'Roblox is temporarily busy':'Couldn’t load this section',e.status===429?(sectionRetries.has(requestKey)?'Roblox is still limiting this section. You can retry after the waiting period.':'Roblox has limited this section. It will retry automatically after the waiting period.'):errorText(e),!restricted)+(restricted?'<p class="subtle-note">Roblox may require authentication, restrict this endpoint, or apply player privacy settings. Bloxscope does not bypass these controls.</p>':'');
+      if(e.status===429)waitForSection(requestKey,e.retryAfter,panel.querySelector('[data-retry]'),version,()=>loadTab(tab));
+    }
   }
 }
 function renderItems(tab,items,data) {
@@ -166,7 +202,7 @@ function scheduleProfileRetry(seconds) {
   },1000);
 }
 async function route() {
-  clearInterval(profileRetryTimer);
+  clearInterval(profileRetryTimer);clearInterval(sectionRetryTimer);
   const version=++routeVersion;panelVersion++;searchAbort?.abort();
   const match=location.hash.match(/^#player\/(\d{1,16})$/);
   const id=match?.[1];
@@ -176,7 +212,7 @@ async function route() {
     if(location.hash==='#how-it-works')requestAnimationFrame(()=>$('#how-it-works').scrollIntoView());
     return;
   }
-  currentId=id;currentProfile=null;activeTab='overview';sectionCache.clear();inventoryType='Hat';
+  currentId=id;currentProfile=null;activeTab='overview';inventoryType='Hat';
   $('#home').hidden=true;$('#profile-view').hidden=false;$('#profile-header').innerHTML='<div class="skeleton" role="status" aria-label="Loading player profile"></div>';$('#profile-main').innerHTML=loading;mountSearch(true);window.scrollTo(0,0);
   try {const cached=profileMemory.get(id);const p=cached && Date.now()-cached.time<300000?cached.data:await api('profile',{id});if(version!==routeVersion)return;if(!p.profileWarning)profileMemory.set(id,{data:p,time:Date.now()});currentProfile=p;renderProfile(p);}
   catch(e){if(version!==routeVersion)return;$('#profile-header').innerHTML=`<div class="error-page">${message(e.status===404?'Player not found':'Couldn’t load this player',errorText(e),true)}</div>`;$('#profile-main').innerHTML='';$('#profile-header').querySelector('[data-retry]')?.addEventListener('click',route);if(e.status===429)scheduleProfileRetry(e.retryAfter);}
@@ -186,7 +222,7 @@ document.addEventListener('click',async e=>{
   const player=e.target.closest('[data-player]');if(player){openPlayer(player.dataset.player);return;}
   const tab=e.target.closest('[data-tab]');if(tab){loadTab(tab.dataset.tab);return;}
   const outfit=e.target.closest('[data-outfit]');if(outfit){openOutfit(outfit.dataset.outfit,outfit.dataset.outfitName);return;}
-  if(e.target.closest('#data-panel [data-retry]')){sectionCache.delete(`${currentId}/${activeTab}/${inventoryType}`);loadTab(activeTab);return;}
+  if(e.target.closest('#data-panel [data-retry]')){loadTab(activeTab);return;}
   if(e.target.closest('[data-share]')) {
     const button=e.target.closest('[data-share]');
     try { await navigator.clipboard.writeText(location.href);button.textContent='Link copied ✓';setTimeout(()=>{if(button.isConnected)button.textContent='Copy profile link ↗';},2000); }

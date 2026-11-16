@@ -83,3 +83,19 @@ test('homepage spotlight only fetches an avatar thumbnail',async t=>{
  globalThis.fetch=async url=>{calls.push(url);return new Response(JSON.stringify({data:[{imageUrl:'https://tr.rbxcdn.com/avatar.png'}]}));};
  await fresh(query({kind:'spotlight'}));assert.equal(calls.length,1);assert.match(calls[0],/^https:\/\/thumbnails.roblox.com\//);
 });
+
+test('outfits use larger pages, forward continuation tokens, and preserve cached pages during throttling',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=outfit-recovery');
+ const original=globalThis.fetch,originalNow=Date.now;let now=1000000,limited=false;const urls=[];
+ t.after(()=>{globalThis.fetch=original;Date.now=originalNow;});Date.now=()=>now;
+ globalThis.fetch=async url=>{
+  urls.push(url);
+  if(url.includes('thumbnails'))return new Response(JSON.stringify({data:[]}));
+  if(limited)return new Response('{}',{status:429,headers:{'retry-after':'15'}});
+  return new Response(JSON.stringify({data:[{id:100,name:'Saved outfit'}],paginationToken:'next+token'}));
+ };
+ const q=query({kind:'outfits',id:'8788893558',cursor:'first+token'});
+ const first=await fresh(q);assert.equal(first.data[0].name,'Saved outfit');assert.equal(first.nextPageCursor,'next+token');
+ assert.ok(urls.some(url=>url.includes('itemsPerPage=50')&&url.includes('paginationToken=first%2Btoken')));
+ now+=31*60000;limited=true;const cached=await fresh(q);assert.equal(cached.data[0].name,'Saved outfit');
+});
