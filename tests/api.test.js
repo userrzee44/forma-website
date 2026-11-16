@@ -146,3 +146,13 @@ test('connection responses never use shared CDN caching',async t=>{
  const r={headers:{},setHeader(k,v){this.headers[k]=v;},status(s){this.code=s;return this;},json(j){this.body=j;}};
  await handler({method:'GET',url:'/api/roblox?kind=followers&id=999988'},r);assert.equal(r.headers['Cache-Control'],'no-store');
 });
+
+test('withheld friend identities do not break the rest of the list or get resolved',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=withheld-friends');const original=globalThis.fetch,prior=process.env.ROBLOX_SESSION_COOKIE;
+ t.after(()=>{globalThis.fetch=original;if(prior===undefined)delete process.env.ROBLOX_SESSION_COOKIE;else process.env.ROBLOX_SESSION_COOKIE=prior;});process.env.ROBLOX_SESSION_COOKIE='FAKE_FRIENDS_SESSION';
+ globalThis.fetch=async (url,options)=>{
+  if(url.includes('/friends?'))return new Response(JSON.stringify({data:[{id:-1},{id:42,name:'Example'}]}));
+  assert.ok(!url.includes('-1'));return new Response(JSON.stringify({data:[]}));
+ };
+ const d=await fresh(query({kind:'friends',id:'6160475465'}));assert.equal(d.data.length,2);assert.equal(d.unavailableCount,1);assert.equal(d.data[0].unavailable,true);assert.equal(d.data[1].name,'Example');
+});

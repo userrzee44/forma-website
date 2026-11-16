@@ -172,6 +172,7 @@ function renderItems(tab,items,data) {
   if(tab==='names')return `<div class="name-list">${items.map(x=>`<span>${escapeHTML(x.name)}</span>`).join('')}</div>`;
   const people=['friends','followers','following'].includes(tab);
   let content=`<div class="tile-grid${people?' people':''}">${items.map(item=>{
+    if(people&&item.unavailable)return '<div class="tile"><span class="tile-placeholder">◈</span><h3>Unavailable player</h3><p>Roblox did not disclose this connection’s identity.</p></div>';
     let sub='',href='',tag='',attrs='',name=item.displayName||item.name||`Item ${item.id}`;
     if(people){sub=`@${item.name || 'Unknown username'}`;attrs=`data-player="${item.id}"`;}
     else if(tab==='outfits'){sub=`Outfit ID ${item.id}`;tag=item.outfitType||'Avatar';attrs=`data-outfit="${item.id}" data-outfit-name="${escapeHTML(name)}"`;}
@@ -182,6 +183,7 @@ function renderItems(tab,items,data) {
     const body=`${image(item.image,name)}<h3>${escapeHTML(name)} ${item.hasVerifiedBadge?'<span class="verified">✓</span>':''}</h3><p>${escapeHTML(sub)}</p>${tag?`<span class="tile-tag">${escapeHTML(tag)}</span>`:''}`;
     return href?`<a class="tile" href="${href}" target="_blank" rel="noopener noreferrer">${body}</a>`:`<button class="tile" ${attrs}>${body}</button>`;
   }).join('')}</div>`;
+  if(data.unavailableCount)content+=`<p class="subtle-note">${data.unavailableCount} connection identities were withheld by Roblox on this page.</p>`;
   if(data.truncated)content+='<p class="subtle-note">Showing the first 50 connections returned by Roblox. This endpoint did not provide further pages.</p>';
   if(tab==='avatar')content+=`<p class="subtle-note">Avatar rig: ${escapeHTML(data.playerAvatarType||'Unknown')}. Items are shown as returned by Roblox; deleted or moderated thumbnails may be unavailable.</p>`;
   if(tab==='groups')content+=`<p class="subtle-note">${number(data.total)} total groups returned by Roblox.</p>`;

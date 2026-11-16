@@ -53,7 +53,7 @@ const get = (host, path) => roblox(`https://${host}.roblox.com${path}`);
 const optional = async promise => { try { return { ok: true, value: await promise }; } catch (e) { return { ok: false, error: e.message, status: e.status || 503 }; } };
 const validId = value => /^\d{1,16}$/.test(value || '') && Number.isSafeInteger(Number(value)) && Number(value) > 0;
 async function pictures(items, type = 'avatar-headshot') {
-  const ids = items.map(x => x.id).filter(Boolean).slice(0, 50);
+  const ids = items.map(x => x.id).filter(id => validId(String(id))).slice(0, 50);
   if (!ids.length) return items;
   const routes = { 'avatar-headshot': `/v1/users/avatar-headshot?userIds=${ids}&size=150x150&format=Png&isCircular=false`, outfits: `/v1/users/outfits?userOutfitIds=${ids}&size=420x420&format=Png&isCircular=false`, assets: `/v1/assets?assetIds=${ids}&size=150x150&format=Png&isCircular=false`, groups: `/v1/groups/icons?groupIds=${ids}&size=150x150&format=Png&isCircular=false`, badges: `/v1/badges/icons?badgeIds=${ids}&size=150x150&format=Png&isCircular=false`, games: `/v1/games/icons?universeIds=${ids}&size=256x256&format=Png&isCircular=false` };
   const result = await optional(get('thumbnails', routes[type]));
@@ -154,16 +154,19 @@ export async function dispatch(params) {
       throw new ApiError(response.status, response.error);
     }
     const result = response.value;
-    const source = (result.data || result.PageItems || []).map(item => ({ ...item, id: item.id ?? item.userId ?? item.Id ?? item.UserId }));
-    if (source.some(u => !validId(String(u.id)))) throw new ApiError(503, 'Roblox returned an unsupported connection response.');
+    const source = (result.data || result.PageItems || []).map(item => {
+      const id = typeof item === 'number' ? item : item.id ?? item.userId ?? item.Id ?? item.UserId;
+      return Number(id) < 0 ? { id: null, name: 'Unavailable player', displayName: 'Unavailable player', unavailable: true } : { ...item, id };
+    });
+    if (source.some(u => !u.unavailable && !validId(String(u.id)))) throw new ApiError(503, 'Roblox returned an unsupported connection response.');
     let users = source.slice(0, 50);
-    if (users.some(u => !u.name)) {
-      const identities = await roblox('https://users.roblox.com/v1/users', { method: 'POST', body: JSON.stringify({ userIds: users.map(u => Number(u.id)), excludeBannedUsers: false }) });
+    if (users.some(u => !u.unavailable && !u.name)) {
+      const identities = await roblox('https://users.roblox.com/v1/users', { method: 'POST', body: JSON.stringify({ userIds: users.filter(u => !u.unavailable).map(u => Number(u.id)), excludeBannedUsers: false }) });
       const names = new Map((identities.data || []).map(u => [u.id,u]));
-      users = users.map(u => ({ ...u, ...names.get(Number(u.id)) }));
+      users = users.map(u => u.unavailable ? u : ({ ...u, ...names.get(Number(u.id)) }));
     }
     const nextPageCursor = result.nextPageCursor || result.NextCursor || result.nextCursor || null;
-    return { data: await pictures(users), nextPageCursor, truncated: !nextPageCursor && source.length > 50 };
+    return { data: await pictures(users), unavailableCount: source.filter(u => u.unavailable).length, nextPageCursor, truncated: !nextPageCursor && source.length > 50 };
   }
   if (kind === 'badges') {
     const result = await get('badges', `/v1/users/${id}/badges?limit=10&sortOrder=Desc${paging}`);
