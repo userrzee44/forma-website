@@ -157,6 +157,13 @@ async function loadTab(tab, pagination = null) {
   }
 }
 function renderItems(tab,items,data) {
+  if(data.availability==='roblox-sign-in'&&['friends','followers','following'].includes(tab)){
+    const labels={friends:'friends',followers:'followers',following:'accounts followed'};
+    const target={friends:'friends',followers:'followers',following:'following'}[tab];
+    const count=currentProfile[tab];
+    const detail=count?.ok?`Roblox reports ${number(count.value.count)} ${labels[tab]} for this player. `:'';
+    return message('View this list on Roblox',detail+'Roblox requires a signed-in session to return the names in this list. This is a Roblox API access restriction, not a claim that this player has hidden their connections.')+`<div class="overview-chips"><a class="button primary" href="https://www.roblox.com/users/${currentId}/friends#!/${target}" target="_blank" rel="noopener noreferrer">Open ${escapeHTML(labels[tab])} on Roblox ↗</a></div><p class="subtle-note">Use your normal Roblox sign-in on roblox.com if prompted. Bloxscope does not ask for or store Roblox session cookies.</p>`;
+  }
   if(!items.length&&tab==='outfits'){
     const text=data.availability==='inventory-private'?'Roblox reports this player’s inventory as private and did not expose any saved outfits to this website. They may still have saved outfits that are visible to them or to friends on Roblox.':'Roblox did not expose saved outfits to this website. This does not confirm that the player has none; visibility and public API access can differ from what you see while signed in to Roblox.';
     return message(data.nextPageCursor?'No outfits on this page':'Outfits aren’t publicly available',text)+'<div class="overview-chips"><button data-tab="avatar">View current avatar ↗</button></div>';

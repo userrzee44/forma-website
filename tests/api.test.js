@@ -110,3 +110,9 @@ test('empty public outfit responses do not claim the player owns no outfits',asy
  globalThis.fetch=async url=>new Response(JSON.stringify(url.includes('can-view-inventory')?{canView:true}:{data:[],paginationToken:''}));
  const d=await fresh(query({kind:'outfits',id:'6160475466'}));assert.equal(d.availability,'not-exposed');
 });
+
+test('connection authentication restrictions are explicit and never presented as empty or private lists',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=connections');const original=globalThis.fetch;t.after(()=>globalThis.fetch=original);
+ globalThis.fetch=async url=>new Response('{}',{status:url.includes('/friends?')?403:401});
+ for(const kind of ['friends','followers','following']){const d=await fresh(query({kind,id:'7283197'}));assert.equal(d.availability,'roblox-sign-in');assert.equal(d.connectionType,kind);assert.deepEqual(d.data,[]);}
+});

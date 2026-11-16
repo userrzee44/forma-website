@@ -137,7 +137,12 @@ export async function dispatch(params) {
   }
   if (['friends','followers','following'].includes(kind)) {
     const route = kind === 'following' ? 'followings' : kind;
-    const result = await get('friends', `/v1/users/${id}/${route}?limit=50&sortOrder=Desc${paging}`);
+    const response = await optional(get('friends', `/v1/users/${id}/${route}?limit=50&sortOrder=Desc${paging}`));
+    if (!response.ok) {
+      if ([401, 403].includes(response.status)) return { data: [], availability: 'roblox-sign-in', connectionType: kind };
+      throw new ApiError(response.status, response.error);
+    }
+    const result = response.value;
     const source = result.data || [];
     return { ...result, data: await pictures(source.slice(0, 50)), truncated: !result.nextPageCursor && source.length > 50 };
   }
