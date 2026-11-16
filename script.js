@@ -157,6 +157,10 @@ async function loadTab(tab, pagination = null) {
   }
 }
 function renderItems(tab,items,data) {
+  if(!items.length&&tab==='outfits'){
+    const text=data.availability==='inventory-private'?'Roblox reports this player’s inventory as private and did not expose any saved outfits to this website. They may still have saved outfits that are visible to them or to friends on Roblox.':'Roblox did not expose saved outfits to this website. This does not confirm that the player has none; visibility and public API access can differ from what you see while signed in to Roblox.';
+    return message(data.nextPageCursor?'No outfits on this page':'Outfits aren’t publicly available',text)+'<div class="overview-chips"><button data-tab="avatar">View current avatar ↗</button></div>';
+  }
   if(!items.length)return message('Nothing to show here',tab==='names'?'Roblox returned no previous usernames for this player.':`Roblox returned no public ${tabs.find(t=>t[0]===tab)?.[2].toLowerCase()} for this player.`);
   if(tab==='names')return `<div class="name-list">${items.map(x=>`<span>${escapeHTML(x.name)}</span>`).join('')}</div>`;
   const people=['friends','followers','following'].includes(tab);

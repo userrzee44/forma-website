@@ -114,7 +114,14 @@ export async function dispatch(params) {
     const page = Number(params.get('page') || 1);
     if (!Number.isInteger(page) || page < 1 || page > 1000) throw new ApiError(400, 'Invalid page number.');
     const result = await get('avatar', `/v2/avatar/users/${id}/outfits?itemsPerPage=50&outfitType=Avatar&isEditable=true&paginationToken=${encodeURIComponent(cursor)}`);
-    return { ...result, data: await pictures(result.data || [], 'outfits'), nextPageCursor: result.paginationToken || null };
+    const data = result.data || [];
+    let availability = 'available';
+    if (!data.length && !result.paginationToken) {
+      // An empty unauthenticated list is not proof that no outfits exist.
+      const visibility = await optional(get('inventory', `/v1/users/${id}/can-view-inventory`));
+      availability = visibility.ok && visibility.value.canView === false ? 'inventory-private' : 'not-exposed';
+    }
+    return { ...result, data: await pictures(data, 'outfits'), availability, nextPageCursor: result.paginationToken || null };
   }
   if (kind === 'outfit') {
     const outfit = params.get('outfit');

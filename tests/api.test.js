@@ -99,3 +99,14 @@ test('outfits use larger pages, forward continuation tokens, and preserve cached
  assert.ok(urls.some(url=>url.includes('itemsPerPage=50')&&url.includes('paginationToken=first%2Btoken')));
  now+=31*60000;limited=true;const cached=await fresh(q);assert.equal(cached.data[0].name,'Saved outfit');
 });
+
+test('empty outfits with a private inventory are labelled unavailable, not nonexistent',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=private-outfits');const original=globalThis.fetch;t.after(()=>globalThis.fetch=original);
+ globalThis.fetch=async url=>new Response(JSON.stringify(url.includes('can-view-inventory')?{canView:false}:{data:[],paginationToken:''}));
+ const d=await fresh(query({kind:'outfits',id:'6160475465'}));assert.equal(d.availability,'inventory-private');assert.equal(d.data.length,0);
+});
+test('empty public outfit responses do not claim the player owns no outfits',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=unexposed-outfits');const original=globalThis.fetch;t.after(()=>globalThis.fetch=original);
+ globalThis.fetch=async url=>new Response(JSON.stringify(url.includes('can-view-inventory')?{canView:true}:{data:[],paginationToken:''}));
+ const d=await fresh(query({kind:'outfits',id:'6160475466'}));assert.equal(d.availability,'not-exposed');
+});
