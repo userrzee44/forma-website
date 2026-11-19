@@ -100,7 +100,7 @@ export async function dispatch(params) {
       status,
       game: visibleGame ? { placeId: Number(p.placeId), name: typeof p.lastLocation === 'string' ? p.lastLocation.slice(0, 200) : 'Roblox experience' } : null,
       // Follow-user launch lets Roblox enforce the joining visitor's own permissions.
-      joinUrl: visibleGame ? `https://www.roblox.com/games/start?userId=${id}` : null,
+      joinUrl: visibleGame ? `https://www.roblox.com/games/start?placeId=${Number(p.placeId)}&userId=${id}` : null,
       lastSeen: null,
       lastSeenNote: 'Roblox no longer provides a reliable last-online timestamp.',
       checkedAt: new Date().toISOString()
