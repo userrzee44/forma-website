@@ -76,7 +76,23 @@ function renderProfile(profile) {
   $('#profile-main').innerHTML=`<div class="profile-layout"><aside class="sidebar" aria-label="Profile sections"><span class="sidebar-label">EXPLORE THIS PLAYER</span>${tabs.map(([id,icon,label])=>`<button class="tab-button" data-tab="${id}"><span aria-hidden="true">${icon}</span>${label}<span class="tab-arrow">›</span></button>`).join('')}</aside><div><section class="panel" id="data-panel" aria-live="polite"></section><p class="data-time">Retrieved ${date(profile.fetchedAt)} at ${new Date(profile.fetchedAt).toLocaleTimeString('en-GB',{timeZone:'UTC'})} UTC · Cached data may be shown while Roblox is busy. Counts and visibility are controlled by Roblox.</p></div></div>`;
   document.title=`${u.displayName || u.name} (@${u.name}) — Bloxscope`;
   loadTab('overview');
+  const presence=document.createElement('section');presence.id='player-presence';presence.className='presence-panel';presence.setAttribute('aria-label','Player online status');
+  $('#profile-header').append(presence);loadPresence();
   if (profile.profileWarning) scheduleProfileRetry(profile.retryAfter || 30);
+}
+let presenceRequestVersion=0, presenceRefreshUntil=0;
+async function loadPresence() {
+  const panel=$('#player-presence');if(!panel||!currentId)return;
+  const id=currentId, version=++presenceRequestVersion;
+  panel.innerHTML='<div class="loading" role="status"><span class="spinner"></span>Checking online status…</div>';
+  try {
+    const p=await api('presence',{id});if(id!==currentId||version!==presenceRequestVersion||!panel.isConnected)return;
+    const labels={'online':'Online','in-game':'In a game','in-studio':'In Roblox Studio','offline-or-hidden':'Offline or hidden','unavailable':'Status unavailable'};
+    const active=['online','in-game','in-studio'].includes(p.status);
+    const join=p.joinUrl&&new URL(p.joinUrl).origin==='https://www.roblox.com'?`<a class="button primary" href="https://www.roblox.com/games/start?userId=${id}" target="_blank" rel="noopener noreferrer" aria-describedby="join-note">Join player</a>`:'<button class="button" disabled aria-describedby="join-note">Join unavailable</button>';
+    panel.innerHTML=`<div class="presence-details"><div><span class="presence-label">ONLINE STATUS</span><strong><i class="presence-dot${active?' active':''}" aria-hidden="true"></i>${labels[p.status]||'Status unavailable'}</strong><small>${p.game?escapeHTML(p.game.name):p.status==='offline-or-hidden'?'Roblox did not disclose an active status.':'Current status returned by Roblox.'}</small></div><div><span class="presence-label">LAST SEEN ONLINE</span><strong>Not available</strong><small>${escapeHTML(p.lastSeenNote)}</small></div></div><div class="presence-actions">${join}<button class="button" data-refresh-presence>Refresh status</button></div><p id="join-note" class="presence-note">${p.joinUrl?'Joining opens Roblox. The player’s join settings, your Roblox account permissions, and server availability still apply.':'A Join player button becomes available when Roblox discloses a current game. Hidden status or joins-off settings cannot be overridden.'}</p><p class="presence-note">Checked ${escapeHTML(new Date(p.checkedAt).toLocaleTimeString('en-GB',{timeZone:'UTC'}))} UTC. Status is a snapshot; refresh to check again.</p>`;
+    presenceRefreshUntil=Date.now()+15000;
+  }catch(e){if(id!==currentId||version!==presenceRequestVersion||!panel.isConnected)return;panel.innerHTML='<div class="presence-details"><div><span class="presence-label">ONLINE STATUS</span><strong>Status unavailable</strong><small>'+escapeHTML(errorText(e))+'</small></div><div><span class="presence-label">LAST SEEN ONLINE</span><strong>Not available</strong><small>Roblox no longer provides a reliable last-online timestamp.</small></div></div><div class="presence-actions"><button class="button" disabled>Join unavailable</button><button class="button" data-refresh-presence>Retry status</button></div>';presenceRefreshUntil=Date.now()+(e.status===429?e.retryAfter*1000:15000);}
 }
 function overview() {
   const p=currentProfile, u=p.user;
@@ -231,6 +247,10 @@ async function route() {
   catch(e){if(version!==routeVersion)return;$('#profile-header').innerHTML=`<div class="error-page">${message(e.status===404?'Player not found':'Couldn’t load this player',errorText(e),true)}</div>`;$('#profile-main').innerHTML='';$('#profile-header').querySelector('[data-retry]')?.addEventListener('click',route);if(e.status===429)scheduleProfileRetry(e.retryAfter);}
 }
 document.addEventListener('click',async e=>{
+  if(e.target.closest('[data-refresh-presence]')){
+    if(Date.now()<presenceRefreshUntil){const b=e.target.closest('[data-refresh-presence]');b.textContent=`Please wait ${Math.ceil((presenceRefreshUntil-Date.now())/1000)}s`;return;}
+    loadPresence();return;
+  }
   if(e.target.closest('[data-refresh-profile]')){profileMemory.delete(currentId);route();return;}
   const player=e.target.closest('[data-player]');if(player){openPlayer(player.dataset.player);return;}
   const tab=e.target.closest('[data-tab]');if(tab){loadTab(tab.dataset.tab);return;}

@@ -6,7 +6,7 @@ const cooldowns = new Map();
 class ApiError extends Error { constructor(status, message, retryAfter = 30) { super(message); this.status = status; this.retryAfter = retryAfter; } }
 async function roblox(url, options = {}) {
   const parsed = new URL(url);
-  const { serviceSession = false, ...requestOptions } = options;
+  const { serviceSession = false, cacheMs = null, allowStale = true, ...requestOptions } = options;
   const session = serviceSession ? (process.env.ROBLOX_SESSION_COOKIE || '').trim() : '';
   const allowed = parsed.origin === 'https://friends.roblox.com' && /^\/v1\/users\/\d+\/(friends(?:\/find)?|followers|followings)$/.test(parsed.pathname) && (!requestOptions.method || requestOptions.method === 'GET');
   if (serviceSession && (!allowed || !session || /[\r\n;]/.test(session))) throw new ApiError(503, 'The server connection is unavailable.');
@@ -15,10 +15,10 @@ async function roblox(url, options = {}) {
   const endpoint = `${sessionKey} ${requestOptions.method || 'GET'} ${parsed.origin}${parsed.pathname}`;
   const isProfile = /^\/v1\/users\/\d+$/.test(parsed.pathname) && parsed.hostname === 'users.roblox.com';
   const isOutfitList = parsed.hostname === 'avatar.roblox.com' && /^\/v2\/avatar\/users\/\d+\/outfits$/.test(parsed.pathname);
-  const ttl = serviceSession ? 60000 : isProfile || isOutfitList ? 30 * 60 * 1000 : 5 * 60 * 1000;
+  const ttl = cacheMs ?? (serviceSession ? 60000 : isProfile || isOutfitList ? 30 * 60 * 1000 : 5 * 60 * 1000);
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.value;
-  const stale = () => !serviceSession && hit && hit.staleUntil > Date.now() ? hit.value : null;
+  const stale = () => allowStale && !serviceSession && hit && hit.staleUntil > Date.now() ? hit.value : null;
   const cooldown = cooldowns.get(endpoint) || 0;
   if (cooldown > Date.now()) {
     if (stale()) return stale();
@@ -87,6 +87,25 @@ export async function dispatch(params) {
   const cursor = params.get('cursor') || '';
   if (cursor.length > 2000) throw new ApiError(400, 'Invalid page cursor.');
   const paging = `&cursor=${encodeURIComponent(cursor)}`;
+  if (kind === 'presence') {
+    // Public presence only: never publish visibility granted solely to the service account.
+    const result = await roblox('https://presence.roblox.com/v1/presence/users', {
+      method: 'POST', body: JSON.stringify({ userIds: [Number(id)] }), cacheMs: 15000, allowStale: false
+    });
+    const p = result.userPresences?.find(item => Number(item.userId) === Number(id));
+    const states = { 0: 'offline-or-hidden', 1: 'online', 2: 'in-game', 3: 'in-studio' };
+    const status = p && states[p.userPresenceType] || 'unavailable';
+    const visibleGame = status === 'in-game' && validId(String(p.placeId));
+    return {
+      status,
+      game: visibleGame ? { placeId: Number(p.placeId), name: typeof p.lastLocation === 'string' ? p.lastLocation.slice(0, 200) : 'Roblox experience' } : null,
+      // Follow-user launch lets Roblox enforce the joining visitor's own permissions.
+      joinUrl: visibleGame ? `https://www.roblox.com/games/start?userId=${id}` : null,
+      lastSeen: null,
+      lastSeenNote: 'Roblox no longer provides a reliable last-online timestamp.',
+      checkedAt: new Date().toISOString()
+    };
+  }
   if (kind === 'profile') {
     let user;
     let profileWarning = null;
@@ -196,7 +215,7 @@ export default async function handler(req, res) {
   try {
     const params = new URL(req.url, 'https://bloxscope.local').searchParams;
     const result = await dispatch(params);
-    const isConnection = ['friends','followers','following'].includes(params.get('kind'));
+    const isConnection = ['friends','followers','following','presence'].includes(params.get('kind'));
     res.setHeader('Cache-Control', (result.profileWarning || isConnection) ? 'no-store' : 'public, s-maxage=300, stale-while-revalidate=600');
     return res.status(200).json(result);
   } catch (error) {

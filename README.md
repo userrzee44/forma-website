@@ -49,3 +49,9 @@ Set `ROBLOX_SESSION_COOKIE` in Vercel Production environment variables as a **Se
 The session is sent only to fixed read-only friends/followers/following endpoints on `https://friends.roblox.com`. It is never sent to thumbnails, users, avatar endpoints, redirects, arbitrary hosts, or a browser. Account actions such as follow/unfollow and friend requests are not implemented. Connection results are not CDN-cached. Server memory entries are separated by a hash of the configured session and expire after one minute; stale authenticated results are not served.
 
 An expired or rejected session falls back to the official Roblox list links. Roblox may reject sessions from server infrastructure or apply challenges/rate limits; the setup requires a live test and does not guarantee access. It does not bypass player privacy. Remove the environment variable and redeploy to disable the integration. Never rotate accounts to evade rate limits.
+
+## Online status and joining
+
+`kind=presence` uses the public Roblox presence endpoint without the server account cookie. The site displays Online, In a game, In Roblox Studio, Offline or hidden, or Status unavailable. A zero/offline response is not proof that a player is offline. No background monitoring or activity history is collected. Presence is fetched on opening a profile and on manual refresh, with a 15-second cache, no stale fallback, and no CDN caching.
+
+Last seen is explicitly unavailable because Roblox deprecated the last-online endpoint. Legacy lastOnline values are ignored. The Join player link is only enabled when Roblox discloses an in-game status and valid place ID. It uses Roblox’s normal follow-user launch URL, which checks the joining visitor’s permissions. It never exposes server instance IDs, scans servers, or overrides joins-off/privacy settings. The launch format is a legacy Roblox deep link and may stop working if Roblox changes support. Actual admission to a game must be checked by Roblox.
