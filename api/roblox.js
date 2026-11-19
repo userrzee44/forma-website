@@ -96,11 +96,12 @@ export async function dispatch(params) {
     const states = { 0: 'offline-or-hidden', 1: 'online', 2: 'in-game', 3: 'in-studio' };
     const status = p && states[p.userPresenceType] || 'unavailable';
     const visibleGame = status === 'in-game' && validId(String(p.placeId));
+    const instanceId = visibleGame && typeof p.gameId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.gameId) ? p.gameId : null;
     return {
       status,
-      game: visibleGame ? { placeId: Number(p.placeId), name: typeof p.lastLocation === 'string' ? p.lastLocation.slice(0, 200) : 'Roblox experience' } : null,
-      // Follow-user launch lets Roblox enforce the joining visitor's own permissions.
-      joinUrl: visibleGame ? `https://www.roblox.com/games/start?placeId=${Number(p.placeId)}&userId=${id}` : null,
+      game: visibleGame ? { placeId: Number(p.placeId), instanceId, name: typeof p.lastLocation === 'string' ? p.lastLocation.slice(0, 200) : 'Roblox experience' } : null,
+      // Exact public instance only. Never fall back to launching an arbitrary server.
+      joinUrl: instanceId ? `roblox://placeId=${Number(p.placeId)}&gameInstanceId=${encodeURIComponent(instanceId)}` : null,
       lastSeen: null,
       lastSeenNote: 'Roblox no longer provides a reliable last-online timestamp.',
       checkedAt: new Date().toISOString()

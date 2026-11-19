@@ -157,10 +157,10 @@ test('withheld friend identities do not break the rest of the list or get resolv
  const d=await fresh(query({kind:'friends',id:'6160475465'}));assert.equal(d.data.length,2);assert.equal(d.unavailableCount,1);assert.equal(d.data[0].unavailable,true);assert.equal(d.data[1].name,'Example');
 });
 
-test('presence never sends the service session or exposes server-instance identifiers',async t=>{
+test('presence never sends the service session and rejects invalid server identifiers',async t=>{
  const {dispatch:fresh}=await import('../api/roblox.js?isolation=public-presence');const original=globalThis.fetch,prior=process.env.ROBLOX_SESSION_COOKIE;t.after(()=>{globalThis.fetch=original;if(prior===undefined)delete process.env.ROBLOX_SESSION_COOKIE;else process.env.ROBLOX_SESSION_COOKIE=prior;});process.env.ROBLOX_SESSION_COOKIE='FAKE_PRESENCE_MUST_NOT_SEND';
  globalThis.fetch=async(url,options)=>{assert.equal(url,'https://presence.roblox.com/v1/presence/users');assert.equal(options.headers.Cookie,undefined);assert.equal(options.method,'POST');return new Response(JSON.stringify({userPresences:[{userId:7283197,userPresenceType:2,placeId:123,lastLocation:'Visible game',gameId:'secret-instance',lastOnline:'2024-11-15T00:00:00Z'}]}));};
- const d=await fresh(query({kind:'presence',id:'7283197'}));assert.equal(d.status,'in-game');assert.equal(d.game.name,'Visible game');assert.equal(d.joinUrl,'https://www.roblox.com/games/start?placeId=123&userId=7283197');assert.equal(d.lastSeen,null);assert.ok(!JSON.stringify(d).includes('secret-instance'));
+ const d=await fresh(query({kind:'presence',id:'7283197'}));assert.equal(d.status,'in-game');assert.equal(d.game.name,'Visible game');assert.equal(d.joinUrl,null);assert.equal(d.game.instanceId,null);assert.equal(d.lastSeen,null);assert.ok(!JSON.stringify(d).includes('secret-instance'));
 });
 test('hidden, offline and missing game details never generate a join link',async t=>{
  const {dispatch:fresh}=await import('../api/roblox.js?isolation=hidden-presence');const original=globalThis.fetch;t.after(()=>globalThis.fetch=original);
@@ -175,6 +175,13 @@ test('missing or mismatched presence records are explicitly unavailable',async t
 });
 test('presence expires quickly and never serves stale online or join data after upstream failure',async t=>{
  const {dispatch:fresh}=await import('../api/roblox.js?isolation=presence-expiry');const original=globalThis.fetch,originalNow=Date.now;let now=1000000,calls=0;t.after(()=>{globalThis.fetch=original;Date.now=originalNow;});Date.now=()=>now;
- globalThis.fetch=async()=>{calls++;return calls===1?new Response(JSON.stringify({userPresences:[{userId:76,userPresenceType:2,placeId:123}]})):new Response('{}',{status:429});};
+ globalThis.fetch=async()=>{calls++;return calls===1?new Response(JSON.stringify({userPresences:[{userId:76,userPresenceType:2,placeId:123,gameId:'12345678-1234-1234-1234-123456789abc'}]})):new Response('{}',{status:429});};
  const q=query({kind:'presence',id:'76'});assert.ok((await fresh(q)).joinUrl);now+=10000;await fresh(q);assert.equal(calls,1);now+=6000;await assert.rejects(fresh(q),e=>e.status===429);assert.equal(calls,2);
+});
+
+
+test('exact-server links require a valid publicly disclosed instance and never use game-only URLs',async t=>{
+ const {dispatch:fresh}=await import('../api/roblox.js?isolation=exact-server');const original=globalThis.fetch;t.after(()=>globalThis.fetch=original);
+ globalThis.fetch=async()=>new Response(JSON.stringify({userPresences:[{userId:77,userPresenceType:2,placeId:123,gameId:'12345678-1234-1234-1234-123456789abc'}]}));
+ const d=await fresh(query({kind:'presence',id:'77'}));assert.equal(d.joinUrl,'roblox://placeId=123&gameInstanceId=12345678-1234-1234-1234-123456789abc');assert.ok(!d.joinUrl.includes('userId='));
 });
